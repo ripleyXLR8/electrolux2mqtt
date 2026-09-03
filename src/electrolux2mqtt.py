@@ -63,6 +63,15 @@ LABELS = {
     # Cuisson
     "program": "Programme",
     "applianceState": "État",
+    "processPhase": "Phase",
+    "fastHeatUpFeature": "Préchauffage rapide",
+    "targetDurationEndAction": "Action en fin de durée",
+    "targetFoodProbeTemperatureEndAction": "Action en fin de sonde",
+    "waterTankLevel": "Réservoir d'eau",
+    "waterTrayInsertionState": "Bac à eau",
+    "descalingReminderState": "Détartrage à faire",
+    "cleaningReminder": "Nettoyage à faire",
+    "displayLight": "Luminosité de l'écran",
     "targetTemperatureC": "Consigne",
     "targetTemperatureF": "Consigne",
     "displayTemperatureC": "Température",
@@ -76,6 +85,7 @@ LABELS = {
     "cavityLight": "Éclairage",
     "timeToEnd": "Temps restant",
     "runningTime": "Temps écoulé",
+    "reminderTime": "Minuteur",
     "targetDuration": "Durée programmée",
     "startTime": "Départ différé",
     "executeCommand": "Commande",
@@ -278,11 +288,10 @@ DEVICE_CLASSES = {
 # « Dry What You Wash », mémoires de cycle. Réglable par ELECTROLUX_EXCLUDE,
 # et ELECTROLUX_INCLUDE permet d'en repêcher au cas par cas.
 DEFAULT_EXCLUDE = (
-    "networkInterface/command",
-    "networkInterface/startUpCommand",
-    "networkInterface/otaState",
-    "networkInterface/swAncAndRevision",
-    "networkInterface/niuSwUpdateCurrentDescription",
+    # Tout le sous-arbre réseau sauf ce que DEFAULT_INCLUDE rattrape : chaque
+    # appareil nomme ses propriétés de mise à jour à sa façon (otaState ici,
+    # oTA3State là), une liste noire ne tiendrait pas.
+    "networkInterface/*",
     "applianceCareAndMaintenance*",
     "dwyw*",
     "cyclePersonalization*",
@@ -291,7 +300,34 @@ DEFAULT_EXCLUDE = (
     "*/maint*",
     "humanCentricLightEventSettings*",
     "miscellaneous/*",
+    # Favoris et recettes : structures imbriquées propres à l'écran de
+    # l'appareil, sans usage domotique.
+    "favorite*",
+    "*/favorite",
+    "*/favorite/*",
+    "messageQueueSync*",
+    "*/messageQueueSync*",
+    # Réglages d'interface et de localisation : ils se font sur l'appareil, et
+    # une liste déroulante de 26 langues n'a rien à faire sur un tableau de bord.
+    "language",
+    "clockStyle",
+    "cpv",
+    "applianceLocalTimeOffset",
+    "autoLocalTimeOffset",
+    "localTimeAutomaticMode",
+    "timeZoneDatabaseName",
 )
+
+# Repêchées malgré les exclusions par défaut. Une exclusion posée par
+# l'utilisateur l'emporte quand même sur cette liste.
+DEFAULT_INCLUDE = (
+    "networkInterface/linkQualityIndicator",
+    "networkInterface/swVersion",
+)
+
+# Valeur entière que les appareils publient pour « non réglé » : c'est INT_MIN,
+# et la laisser passer polluerait durablement un historique Jeedom.
+NOT_SET = -2147483648
 
 # Types de capabilities considérés comme numériques.
 NUMERIC_TYPES = {"number", "int", "temperature", "float"}
@@ -416,7 +452,7 @@ class Bridge:
             "electrolux", "temperature_unit", fallback="auto"
         ).strip().upper()
         excluded = config.get("electrolux", "exclude", fallback="").strip()
-        self._exclude = set(DEFAULT_EXCLUDE) | {
+        self._user_exclude = {
             item.strip() for item in excluded.split(",") if item.strip()
         }
         included = config.get("electrolux", "include", fallback="").strip()
@@ -541,9 +577,19 @@ class Bridge:
         )
 
     def _excluded(self, path: str) -> bool:
-        if any(fnmatch.fnmatch(path, pattern) for pattern in self._include):
+        """Priorités : inclusion de l'utilisateur, puis son exclusion, puis les
+        listes par défaut. Ce qu'il écrit l'emporte toujours sur les réglages
+        d'usine, dans un sens comme dans l'autre."""
+        def matches(patterns) -> bool:
+            return any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
+
+        if matches(self._include):
             return False
-        return any(fnmatch.fnmatch(path, pattern) for pattern in self._exclude)
+        if matches(self._user_exclude):
+            return True
+        if matches(DEFAULT_INCLUDE):
+            return False
+        return matches(DEFAULT_EXCLUDE)
 
     def _walk(
         self, node: dict[str, Any], prefix: tuple[str, ...] = ()
@@ -610,6 +656,10 @@ class Bridge:
             if isinstance(value, bool):
                 return PAYLOAD_ON if value else PAYLOAD_OFF
             if isinstance(value, (int, float)) and kind in NUMERIC_TYPES:
+                # « Non réglé » : ne rien publier plutôt que de faire entrer
+                # -2147483648 dans l'historique.
+                if value == NOT_SET:
+                    return None
                 rounded = round(float(value), 1)
                 return str(int(rounded)) if rounded.is_integer() else str(rounded)
             return str(value)
@@ -646,6 +696,66 @@ class Bridge:
 
         return build
 
+    def _numeric_bounds(
+        self, joined: str, node: dict[str, Any], ranges: dict[str, dict[str, float]]
+    ) -> dict[str, float]:
+        """Bornes d'un curseur : capability, sinon énumération, sinon programmes."""
+        bounds = {
+            key: node[key] for key in ("min", "max", "step") if node.get(key) is not None
+        }
+        if "min" in bounds and "max" in bounds:
+            return bounds
+
+        # Une énumération numérique (volume sonore 1..4) porte ses bornes dans
+        # ses propres valeurs.
+        values = node.get("values")
+        if isinstance(values, dict) and values:
+            try:
+                numbers = sorted(float(name) for name in values)
+            except ValueError:
+                numbers = []
+            if numbers:
+                bounds.setdefault("min", numbers[0])
+                bounds.setdefault("max", numbers[-1])
+                bounds.setdefault("step", 1)
+                return bounds
+
+        bounds.update({k: v for k, v in ranges.get(joined, {}).items() if k not in bounds})
+        return bounds
+
+    def _program_ranges(self, capabilities: dict[str, Any]) -> dict[str, dict[str, float]]:
+        """Plages des consignes, glanées dans les métadonnées des programmes.
+
+        Un four ne déclare aucun min/max sur `targetTemperatureC` : la plage
+        dépend du mode de cuisson et vit dans les métadonnées de chaque valeur
+        de `program` (80-230 °C en chaleur tournante, 50-100 °C en vapeur…).
+        On en prend l'union, ce qui donne des bornes justes pour un curseur quel
+        que soit le programme en cours, sans avoir à republier la découverte à
+        chaque changement de mode.
+        """
+        ranges: dict[str, dict[str, float]] = {}
+        for _path, node in self._walk(capabilities):
+            values = node.get("values")
+            if not isinstance(values, dict):
+                continue
+            for meta in values.values():
+                if not isinstance(meta, dict):
+                    continue
+                for target, spec in meta.items():
+                    if not isinstance(spec, dict) or spec.get("disabled"):
+                        continue
+                    current = ranges.setdefault(target, {})
+                    for bound, pick in (("min", min), ("max", max)):
+                        value = spec.get(bound)
+                        if isinstance(value, (int, float)):
+                            current[bound] = pick(current.get(bound, value), value)
+                    step = spec.get("step")
+                    # Un pas nul veut dire « température imposée » : il ne doit
+                    # pas écraser le pas réel des autres programmes.
+                    if isinstance(step, (int, float)) and step > 0:
+                        current["step"] = min(current.get("step", step), step)
+        return {key: value for key, value in ranges.items() if value}
+
     def _values(self, node: dict[str, Any]) -> list[str]:
         """Valeurs autorisées d'une énumération, les désactivées en moins."""
         values = node.get("values")
@@ -664,6 +774,7 @@ class Bridge:
             for key, value in app.capabilities.items()
             if self._is_container(value) and key != "networkInterface"
         ]
+        ranges = self._program_ranges(app.capabilities)
         for path, node in self._walk(app.capabilities):
             joined = "/".join(path)
             if self._excluded(joined):
@@ -731,10 +842,11 @@ class Bridge:
                 component = "number"
                 default_max = 86400 if prop in DURATION_PROPERTIES else 300
                 default_step = 60 if prop in DURATION_PROPERTIES else 1
+                bounds = self._numeric_bounds(joined, node, ranges)
                 config = {
-                    "min": node.get("min", 0),
-                    "max": node.get("max", default_max),
-                    "step": node.get("step", default_step),
+                    "min": bounds.get("min", 0),
+                    "max": bounds.get("max", default_max),
+                    "step": bounds.get("step", default_step),
                     "mode": "box",
                 }
                 unit = UNITS.get(prop)
@@ -770,6 +882,7 @@ class Bridge:
 
         self._add_derived(app, containers)
         self._dedupe_device_classes(app)
+        self._resolve_name_collisions(app)
 
     def _add(self, app: ApplianceBridge, entity: Entity) -> None:
         if entity.key in app.entities:
@@ -839,6 +952,25 @@ class Bridge:
                 render=lambda reported: None,
             ),
         )
+
+    def _resolve_name_collisions(self, app: ApplianceBridge) -> None:
+        """Distingue deux entités homonymes, sans toucher à la plus parlante.
+
+        Un four expose `applianceState` deux fois : à la racine (l'appareil est
+        allumé ou non) et dans la cavité (l'état de la cuisson). Les deux
+        s'appellent « État ». C'est celle de la cavité qu'on regarde au
+        quotidien : c'est donc celle de la racine qui est qualifiée.
+        """
+        by_name: dict[str, list[Entity]] = {}
+        for entity in app.entities.values():
+            by_name.setdefault(entity.name, []).append(entity)
+        for name, group in by_name.items():
+            if len(group) < 2:
+                continue
+            for entity in group:
+                if len(entity.path) == 1:
+                    entity.name = f"{name} (appareil)"
+                    LOGGER.debug("Homonymie résolue : %s -> %s", name, entity.name)
 
     def _dedupe_device_classes(self, app: ApplianceBridge) -> None:
         """Retire les device_class utilisées plus d'une fois sur l'appareil.
