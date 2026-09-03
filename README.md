@@ -141,7 +141,17 @@ homeassistant/<component>/electrolux_<appliance>/<entity>/config   discovery (re
   with *Porte* and *Porte (1)* instead of the real labels.
 - A `number` component creates two Jeedom commands: the hidden info, and a slider action.
 - Command names are only set on creation: renaming one in Jeedom is permanent, and a
-  re-publication will not overwrite it.
+  re-publication will not overwrite it. The same is true of the display defaults the plugin
+  derives from `device_class` — they are applied when the command is created, never on a later
+  re-discovery.
+- ⚠️ **The `core::alert` widget is red on 0 and green on 1**, which is the opposite of what its
+  name suggests — Jeedom defines it in `core/config/jeedom.config.php` with `#_icon_on_#` as a green
+  check and `#_icon_off_#` as a red alert. This bridge follows the Home Assistant conventions:
+  `device_class: connectivity` is ON while the link is **up**, and `device_class: problem` is ON
+  while there **is** a problem. The plugin maps neither class, so if you put those commands on
+  `core::alert`, tick **"invert binary"** by hand on the descaling and cleaning reminders and leave
+  it **off** on the online indicator. Backwards, an oven that is asking for a cleaning cycle shows
+  up green.
 
 ## Home Assistant notes
 
