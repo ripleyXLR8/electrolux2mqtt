@@ -1,0 +1,63 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>electrolux2mqtt</Name>
+  <Repository>ghcr.io/ripleyxlr8/electrolux2mqtt:latest</Repository>
+  <Registry>https://github.com/ripleyXLR8/electrolux2mqtt/pkgs/container/electrolux2mqtt</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/ripleyXLR8/electrolux2mqtt/issues</Support>
+  <Project>https://github.com/ripleyXLR8/electrolux2mqtt</Project>
+  <Overview>
+    Bridges connected Electrolux, AEG, Frigidaire and +home appliances to your MQTT broker, using Home Assistant style discovery.
+
+    Your appliances then show up on their own in Jeedom, Home Assistant, or any other MQTT Discovery consumer.
+
+    EVERY APPLIANCE, NOT JUST ONE FAMILY:
+    Entities are derived from the capabilities the appliance itself declares, so ovens, hobs, hoods, fridges, dishwashers, washers, dryers, air conditioners, purifiers, dehumidifiers and robot vacuums all work - programs, states, temperatures, food probe, door, remaining time, alerts, and the settings your own appliance exposes. Verified against the capability sets of 14 appliance families shipped with the official Electrolux SDK.
+
+    REAL TIME, NO POLLING:
+    State changes arrive as a push over the API's Server-Sent Events livestream, so the cloud is never polled in a loop. A full re-read every 15 minutes acts as a safety net. The bridge is built on electrolux-group-developer-sdk, the SDK published by Electrolux itself.
+
+    ROBUST:
+    Discovery, states and command subscriptions are replayed on every reconnection to the broker, so a broker restart cannot leave the bridge publishing states while silently ignoring commands. An MQTT Last Will reports the bridge going down. Electrolux rotates the refresh token on every renewal, so the current pair is persisted in the config folder - a restart never leaves you locked out with a spent token.
+
+    REQUIREMENTS:
+    An MQTT broker, and credentials from https://developer.electrolux.one/dashboard : create an API key, then generate an access token / refresh token pair. The appliance must first be paired and named in the Electrolux or AEG mobile app.
+
+    A note on control: monitoring always works, but commands are gated by the appliance. On ovens and hobs, remote operation must be enabled on the appliance's own display and switches itself off after a while, which is a safety requirement, not a limitation of this bridge. A read-only mode is available.
+
+    Not affiliated with, endorsed by, or supported by Electrolux Group.
+  </Overview>
+  <Category>HomeAutomation:</Category>
+  <WebUI/>
+  <TemplateURL>https://raw.githubusercontent.com/ripleyXLR8/unraid-templates/main/electrolux2mqtt.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/ripleyXLR8/electrolux2mqtt/main/electrolux2mqtt-icon.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <Requires>An MQTT broker, and credentials created at https://developer.electrolux.one/dashboard (an API key, plus an access token / refresh token pair). The appliance must already be paired and named in the Electrolux or AEG mobile app.</Requires>
+  <ExtraSearchTerms>electrolux aeg frigidaire oven hob hood fridge dishwasher washer dryer air conditioner mqtt jeedom homeassistant home assistant discovery ocp</ExtraSearchTerms>
+
+  <Config Name="API key" Target="ELECTROLUX_API_KEY" Default="" Mode="" Description="Created at https://developer.electrolux.one/dashboard, signed in with the same account as the mobile app." Type="Variable" Display="always" Required="true" Mask="true"/>
+  <Config Name="Refresh token" Target="ELECTROLUX_REFRESH_TOKEN" Default="" Mode="" Description="Generated on the same portal page as the API key. Only used to bootstrap: the bridge stores the rotating token pair in the config folder." Type="Variable" Display="always" Required="true" Mask="true"/>
+  <Config Name="Access token" Target="ELECTROLUX_ACCESS_TOKEN" Default="" Mode="" Description="Optional. Left empty, the bridge obtains one from the refresh token at startup." Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="MQTT broker host" Target="MQTT_HOST" Default="" Mode="" Description="IP address or hostname of your MQTT broker." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="MQTT broker port" Target="MQTT_PORT" Default="1883" Mode="" Description="Port of your MQTT broker." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="MQTT username" Target="MQTT_USER" Default="" Mode="" Description="Leave empty if your broker allows anonymous connections." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="MQTT password" Target="MQTT_PASSWORD" Default="" Mode="" Description="Leave empty if your broker allows anonymous connections." Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Config folder" Target="/config" Default="" Mode="rw" Description="Strongly recommended: this is where the rotating token pair is stored. Without it, a container restart may leave the bridge with a spent refresh token." Type="Path" Display="always" Required="false" Mask="false"/>
+
+  <Config Name="Read-only mode" Target="ELECTROLUX_READ_ONLY" Default="false" Mode="" Description="true publishes states only and exposes no command at all. Worth considering on an oven or a hob." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Temperature unit" Target="ELECTROLUX_TEMPERATURE_UNIT" Default="auto" Mode="" Description="auto, C or F. Appliances report the same temperature in both units; only one is published." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Discovery topic prefix" Target="MQTT_DISCOVERY_PREFIX" Default="homeassistant" Mode="" Description="Where discovery messages are published. Must match what your consumer listens on: homeassistant for Home Assistant, or the configuration topic of the Jeedom MQTT Discovery plugin." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="State topic prefix" Target="MQTT_TOPIC_PREFIX" Default="electrolux" Mode="" Description="Root of the state and command topics. Jeedom users: this prefix must ALSO be listed in the data topics setting of the MQTT Discovery plugin, otherwise the plugin silently ignores the discovery messages." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Safety re-read interval" Target="ELECTROLUX_REFRESH_INTERVAL" Default="900" Mode="" Description="Seconds between two full re-reads of the appliance state, 0 disables it. Changes normally arrive as a push, so this is only a safety net." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Excluded properties" Target="ELECTROLUX_EXCLUDE" Default="" Mode="" Description="Comma separated shell-style patterns matched against property paths, added to the built-in list. Example: networkInterface/*, userSelections/*" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Included properties" Target="ELECTROLUX_INCLUDE" Default="" Mode="" Description="Comma separated patterns that win over the exclusions, to bring back a property filtered out by default." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Token file" Target="ELECTROLUX_TOKEN_FILE" Default="/config/electrolux_token.json" Mode="" Description="Where the rotating token pair is persisted. Keep it inside the mounted config folder." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="MQTT client id" Target="MQTT_CLIENT_ID" Default="electrolux2mqtt" Mode="" Description="Only change this if another client already uses that id on your broker." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Log level" Target="LOG_LEVEL" Default="INFO" Mode="" Description="DEBUG, INFO, WARNING or ERROR. DEBUG also logs every raw event received from the cloud." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Timezone" Target="TZ" Default="Europe/Paris" Mode="" Description="Timezone used for the log timestamps and for the derived end-of-cycle time." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+</Container>

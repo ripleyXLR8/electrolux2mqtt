@@ -61,7 +61,7 @@ at the current `remoteControl` value, which is published as an entity of its own
 
 ## Getting your credentials
 
-1. Pair the appliance in the **My Electrolux / AEG** mobile app, and give it a name.
+1. Pair the appliance in the **Electrolux** (or **AEG**) mobile app, and give it a name.
 2. Go to <https://developer.electrolux.one/dashboard>, sign in with the same account.
 3. Create an **API key**, then generate an **access token / refresh token** pair.
 
