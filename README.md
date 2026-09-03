@@ -129,8 +129,13 @@ homeassistant/<component>/electrolux_<appliance>/<entity>/config   discovery (re
 
 ## Jeedom notes
 
-- Add the state prefix (`electrolux`) to the **data topics** setting of the *MQTT Discovery*
-  plugin. Without it the plugin silently ignores the discovery messages.
+- The plugin only creates equipment for topic roots listed in its **data topics** setting, so
+  `electrolux` has to be there. You do not have to type it: start the plugin daemon, wait a
+  minute, refresh its configuration page, and the roots it has discovered but that are not
+  configured yet are offered with a `+` button. This is deliberate and
+  [documented](https://mips2648.github.io/jeedom-plugins-docs/MQTTDiscovery/fr_FR/#tocAnchor-1-7-2) —
+  the plugin does not auto-enable everything it finds, because that would create a lot of
+  equipment nobody asked for.
 - The plugin renames a command after its `device_class`. The bridge therefore drops any
   `device_class` used more than once on the same appliance, so that a double oven does not end up
   with *Porte* and *Porte (1)* instead of the real labels.
