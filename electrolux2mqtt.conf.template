@@ -1,0 +1,77 @@
+; electrolux2mqtt - configuration file
+;
+; Copy this file to /config/electrolux2mqtt.conf and fill it in.
+; Every setting below can also be supplied through an environment variable,
+; which takes precedence over the file. The variable name is given in the
+; comment above each option, and that is what the Unraid template uses.
+
+[electrolux]
+; ELECTROLUX_API_KEY / ELECTROLUX_REFRESH_TOKEN / ELECTROLUX_ACCESS_TOKEN
+; Created at https://developer.electrolux.one/dashboard : "Create new API key",
+; then generate a token pair for your account. The access token is optional -
+; without it the bridge obtains one from the refresh token at startup.
+;
+; IMPORTANT: refresh tokens rotate. The bridge stores the current pair in
+; token_file below and uses it on the next start, so these two values are only
+; the bootstrap. If you ever lose the file, generate a new pair on the portal.
+api_key =
+refresh_token =
+access_token =
+
+; ELECTROLUX_TOKEN_FILE
+; Where the rotating token pair is stored. It must survive a container restart:
+; keep it on the mounted /config folder.
+token_file = /config/electrolux_token.json
+
+; ELECTROLUX_REFRESH_INTERVAL
+; Seconds between two full re-reads of the appliance state (0 disables it).
+; State changes normally arrive as a push over Server-Sent Events, so this is
+; only a safety net.
+refresh_interval = 900
+
+; ELECTROLUX_TEMPERATURE_UNIT - auto, C or F.
+; Appliances report the same temperature twice, once in Celsius and once in
+; Fahrenheit. Only one is published. "auto" follows the appliance setting.
+temperature_unit = auto
+
+; ELECTROLUX_READ_ONLY
+; true exposes states only, and no command at all. Worth considering on an
+; oven or a hob if you only want monitoring.
+read_only = false
+
+; ELECTROLUX_EXCLUDE / ELECTROLUX_INCLUDE
+; Comma separated shell-style patterns matched against the property path, for
+; instance "networkInterface/*, userSelections/*". Excludes are added to the
+; built-in list (maintenance counters, algorithm internals, network admin
+; commands); includes win over excludes, and let you bring one back.
+exclude =
+include =
+
+[mqtt]
+; MQTT_HOST / MQTT_PORT
+host = 127.0.0.1
+port = 1883
+
+; MQTT_USER / MQTT_PASSWORD - leave empty for an anonymous broker.
+login =
+password =
+
+; MQTT_CLIENT_ID
+client_id = electrolux2mqtt
+
+; MQTT_DISCOVERY_PREFIX
+; Where discovery messages are published. Must match what your consumer
+; listens on: "homeassistant" for Home Assistant, and the "configuration
+; topic" of the Jeedom MQTT Discovery plugin.
+discovery_prefix = homeassistant
+
+; MQTT_TOPIC_PREFIX
+; Root of the state and command topics.
+; Jeedom users: this prefix must also be listed in the "data topics" setting
+; of the MQTT Discovery plugin, otherwise the plugin silently ignores the
+; discovery messages.
+topic_prefix = electrolux
+
+[log]
+; LOG_LEVEL - DEBUG, INFO, WARNING or ERROR.
+level = INFO

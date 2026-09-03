@@ -1,0 +1,2 @@
+electrolux-group-developer-sdk==0.6.1
+paho-mqtt>=2.1,<3

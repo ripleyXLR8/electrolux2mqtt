@@ -1,0 +1,98 @@
+{
+  "_comment": "Synthetic single-cavity European steam oven, written by hand from the capability schema. Covers the cases the mapper has to get right: a nested container that also carries an access of its own, a constant, an excluded maintenance block, both temperature units, a write-only enum and an alert list.",
+  "applianceInfo": {
+    "serialNumber": "00000000",
+    "pnc": "944000000",
+    "brand": "Electrolux",
+    "deviceType": "OVEN",
+    "model": "SteamOven",
+    "variant": "",
+    "colour": "BLACK"
+  },
+  "capabilities": {
+    "applianceState": {
+      "access": "read",
+      "type": "string",
+      "values": {"OFF": {}, "IDLE": {}, "RUNNING": {}, "PAUSED": {}, "END_OF_CYCLE": {}}
+    },
+    "executeCommand": {
+      "access": "write",
+      "type": "string",
+      "values": {"START": {}, "STOPRESET": {}}
+    },
+    "program": {
+      "access": "readwrite",
+      "type": "string",
+      "values": {"TRUE_FAN": {}, "STEAM_FULL": {}, "GRILL": {}, "DEFROST": {"disabled": true}}
+    },
+    "targetTemperatureC": {"access": "readwrite", "type": "temperature", "min": 30, "max": 300, "step": 5},
+    "targetTemperatureF": {"access": "readwrite", "type": "temperature", "min": 85, "max": 570, "step": 5},
+    "displayTemperatureC": {"access": "read", "type": "temperature"},
+    "displayTemperatureF": {"access": "read", "type": "temperature"},
+    "displayFoodProbeTemperatureC": {"access": "read", "type": "temperature"},
+    "targetFoodProbeTemperatureC": {"access": "readwrite", "type": "temperature", "min": 20, "max": 99, "step": 1},
+    "foodProbeInsertionState": {"access": "read", "type": "string", "values": {"INSERTED": {}, "NOT_INSERTED": {}}},
+    "doorState": {"access": "read", "type": "string", "values": {"OPEN": {}, "CLOSED": {}}},
+    "cavityLight": {"access": "readwrite", "type": "boolean", "values": {"ON": {}, "OFF": {}}},
+    "timeToEnd": {"access": "read", "type": "number"},
+    "runningTime": {"access": "read", "type": "number"},
+    "targetDuration": {"access": "readwrite", "type": "number", "min": 0, "max": 86340, "step": 60},
+    "waterTankEmpty": {"access": "read", "type": "string", "values": {"EMPTY": {}, "NOT_EMPTY": {}}},
+    "remoteControl": {
+      "access": "read",
+      "type": "string",
+      "values": {"ENABLED": {}, "DISABLED": {}, "NOT_SAFETY_RELEVANT_ENABLED": {}, "TEMPORARY_LOCKED": {}}
+    },
+    "temperatureRepresentation": {"access": "readwrite", "type": "string", "values": {"CELSIUS": {}, "FAHRENHEIT": {}}},
+    "alerts": {"access": "read", "type": "alert"},
+    "keyModel": {"access": "constant", "type": "string"},
+    "userSelections": {
+      "access": "readwrite",
+      "type": "complex",
+      "steamLevel": {"access": "readwrite", "type": "string", "values": {"LOW": {}, "MEDIUM": {}, "HIGH": {}}},
+      "programUID": {"access": "readwrite", "type": "string"}
+    },
+    "applianceCareAndMaintenance0": {
+      "access": "readwrite",
+      "type": "careMaintenance",
+      "maint1_ID": {"access": "readwrite", "type": "int"},
+      "maint1_occured": {"access": "read", "type": "boolean"}
+    },
+    "networkInterface": {
+      "linkQualityIndicator": {"access": "read", "type": "string", "values": {"GOOD": {}, "POOR": {}}},
+      "swVersion": {"access": "read", "type": "string"},
+      "startUpCommand": {"access": "write", "type": "string", "values": {"UNINSTALL": {}}}
+    }
+  },
+  "_state": {
+    "applianceId": "944000000_00:TEST",
+    "connectionState": "connected",
+    "status": "enabled",
+    "properties": {
+      "desired": {},
+      "metadata": {},
+      "reported": {
+        "applianceState": "RUNNING",
+        "program": "STEAM_FULL",
+        "targetTemperatureC": 180.0,
+        "targetTemperatureF": 356.0,
+        "displayTemperatureC": 172.4,
+        "displayTemperatureF": 342.3,
+        "displayFoodProbeTemperatureC": 63.5,
+        "targetFoodProbeTemperatureC": 75.0,
+        "foodProbeInsertionState": "INSERTED",
+        "doorState": "CLOSED",
+        "cavityLight": true,
+        "timeToEnd": 1500,
+        "runningTime": 900,
+        "targetDuration": 2400,
+        "waterTankEmpty": "NOT_EMPTY",
+        "remoteControl": "ENABLED",
+        "temperatureRepresentation": "CELSIUS",
+        "alerts": [{"severity": "WARNING", "code": "42", "acknowledgeStatus": "NOT_NEEDED"}],
+        "userSelections": {"steamLevel": "HIGH", "programUID": "1234"},
+        "networkInterface": {"linkQualityIndicator": "GOOD", "swVersion": "v2.1.0"}
+      }
+    }
+  }
+}
