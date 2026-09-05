@@ -94,7 +94,7 @@ check(entities["appliancestate"].component == "sensor", "une énumération en le
 check(entities["cavitylight"].component == "switch", "un booléen inscriptible est un switch")
 check(entities["doorstate"].component == "binary_sensor", "la porte est un binaire")
 check(entities["doorstate"].config.get("device_class") == "door",
-      "la porte garde son device_class quand elle est seule")
+      "la porte garde son device_class")
 check(entities["targettemperaturec"].component == "number", "une consigne est un number")
 check(entities["targettemperaturec"].config["max"] == 300, "les bornes viennent des capabilities")
 check(entities["displaytemperaturec"].component == "sensor", "une mesure reste un sensor")
