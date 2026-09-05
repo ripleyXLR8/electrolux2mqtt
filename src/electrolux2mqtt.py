@@ -881,7 +881,6 @@ class Bridge:
             )
 
         self._add_derived(app, containers)
-        self._dedupe_device_classes(app)
         self._resolve_name_collisions(app)
 
     def _add(self, app: ApplianceBridge, entity: Entity) -> None:
@@ -971,29 +970,6 @@ class Bridge:
                 if len(entity.path) == 1:
                     entity.name = f"{name} (appareil)"
                     LOGGER.debug("Homonymie résolue : %s -> %s", name, entity.name)
-
-    def _dedupe_device_classes(self, app: ApplianceBridge) -> None:
-        """Retire les device_class utilisées plus d'une fois sur l'appareil.
-
-        Le plugin Jeedom MQTT Discovery **renomme la commande d'après le
-        device_class** : deux entités partageant la même classe se retrouvent
-        nommées « Porte » et « Porte (1) », et le libellé métier est perdu.
-        """
-        counts: dict[str, int] = {}
-        for entity in app.entities.values():
-            klass = entity.config.get("device_class")
-            if klass:
-                counts[klass] = counts.get(klass, 0) + 1
-        for entity in app.entities.values():
-            klass = entity.config.get("device_class")
-            if klass and counts.get(klass, 0) > 1 and entity.key != "link":
-                LOGGER.debug(
-                    "device_class %s retirée de %s (utilisée %d fois)",
-                    klass,
-                    entity.key,
-                    counts[klass],
-                )
-                entity.config.pop("device_class", None)
 
     # ------------------------------------------------------------------
     # Découverte MQTT

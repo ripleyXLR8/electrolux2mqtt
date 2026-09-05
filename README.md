@@ -136,9 +136,10 @@ homeassistant/<component>/electrolux_<appliance>/<entity>/config   discovery (re
   [documented](https://mips2648.github.io/jeedom-plugins-docs/MQTTDiscovery/fr_FR/#tocAnchor-1-7-2) —
   the plugin does not auto-enable everything it finds, because that would create a lot of
   equipment nobody asked for.
-- The plugin renames a command after its `device_class`. The bridge therefore drops any
-  `device_class` used more than once on the same appliance, so that a double oven does not end up
-  with *Porte* and *Porte (1)* instead of the real labels.
+- The plugin renames a command after its `device_class` **only when the discovery payload carries
+  no `name`**. Since the MQTT Discovery beta of 2026-09-05 a published `name` wins, so the bridge
+  no longer strips duplicate classes: an appliance with two `temperature` entities keeps its own
+  labels, and every command still gets the `generic_type` and default widget the class brings.
 - A `number` component creates two Jeedom commands: the hidden info, and a slider action.
 - Command names are only set on creation: renaming one in Jeedom is permanent, and a
   re-publication will not overwrite it. The same is true of the display defaults the plugin
