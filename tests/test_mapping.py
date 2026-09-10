@@ -172,6 +172,26 @@ check(e2m.merge_command_bodies([{"energySavingMode": "ON"}, {"upperOven": {"prog
 check(e2m.merge_command_bodies([]) == {}, "lot vide")
 check(0 < e2m.COMMAND_COALESCE_SECONDS <= 1, "fenêtre de regroupement courte")
 
+# --- Évènements SSE : une propriété par évènement, chemin « a/b » ------------
+check(e2m.property_delta("upperOven/cavityLight", False) == {"upperOven": {"cavityLight": False}},
+      "un chemin à deux niveaux devient un dictionnaire imbriqué")
+check(e2m.property_delta("applianceState", "RUNNING") == {"applianceState": "RUNNING"},
+      "une propriété racine reste à la racine")
+event = {"applianceId": app.appliance_id, "property": "upperOven/applianceState",
+         "userId": "u", "value": "RUNNING"}
+check(bridge._extract_reported(event) == {"upperOven": {"applianceState": "RUNNING"}},
+      "l'évènement du flux est traduit en delta d'état (forme relevée le 2026-09-11)")
+check(bridge._extract_reported({"properties": {"reported": {"upperOven": {"program": "BAKE"}}}})
+      == {"upperOven": {"program": "BAKE"}},
+      "l'enveloppe REST reste acceptée")
+check(bridge._extract_reported({"applianceId": "x", "userId": "u", "timestamp": 1})
+      == {}, "une enveloppe sans contenu ne pollue pas l'état")
+before = dict(app.reported)
+e2m.deep_merge(app.reported, bridge._extract_reported(event))
+check(e2m.deep_get(app.reported, ("upperOven", "applianceState")) == "RUNNING"
+      and "property" not in app.reported and "value" not in app.reported,
+      "après fusion, l'état porte la propriété et aucune clé d'enveloppe")
+
 if failures:
     print(f"\n{len(failures)} échec(s) :")
     for failure in failures:

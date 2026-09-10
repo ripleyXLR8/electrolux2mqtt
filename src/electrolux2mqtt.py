@@ -344,7 +344,18 @@ ALERT_TYPES = {"alert", "alerts"}
 OPAQUE_TYPES = {"complex", "container", "map", "custom", "object", "careMaintenance"}
 
 # Le SSE ne porte que des deltas : ces clés d'enveloppe sont ignorées au merge.
-EVENT_ENVELOPE_KEYS = {"applianceId", "timestamp", "eventType", "type"}
+EVENT_ENVELOPE_KEYS = {"applianceId", "timestamp", "eventType", "type", "userId"}
+
+
+def property_delta(path: str, value: Any) -> dict[str, Any]:
+    """« upperOven/cavityLight », False -> {"upperOven": {"cavityLight": False}}."""
+    delta: dict[str, Any] = {}
+    node = delta
+    parts = [part for part in path.split("/") if part]
+    for part in parts[:-1]:
+        node = node.setdefault(part, {})
+    node[parts[-1]] = value
+    return delta
 
 
 def slugify(value: str) -> str:
@@ -1208,6 +1219,14 @@ class Bridge:
 
     def _extract_reported(self, event: dict[str, Any]) -> dict[str, Any]:
         """Extrait le delta d'un évènement SSE, quelle que soit son enveloppe."""
+        # Forme réellement servie par le flux (relevée le 2026-09-11) : une seule
+        # propriété par évènement, son chemin séparé par « / » :
+        # {"applianceId": …, "property": "upperOven/cavityLight", "value": false, "userId": …}
+        # Sans cette branche, « property »/« value » entraient tels quels dans
+        # l'état et rien ne bougeait avant la relecture périodique.
+        prop = event.get("property")
+        if isinstance(prop, str) and prop and "value" in event:
+            return property_delta(prop, event["value"])
         properties = event.get("properties")
         if isinstance(properties, dict):
             reported = properties.get("reported")
