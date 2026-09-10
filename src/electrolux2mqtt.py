@@ -256,6 +256,10 @@ UNITS = {
     "reminderTime": "s",
 }
 
+# Fenêtre pendant laquelle les commandes reçues pour un même appareil sont
+# regroupées en une seule requête API (voir Bridge._queue_command).
+COMMAND_COALESCE_SECONDS = 0.3
+
 # Propriétés exprimées en secondes : bornes par défaut d'un composant number
 # quand les capabilities n'en fournissent pas.
 DURATION_PROPERTIES = {
@@ -378,6 +382,15 @@ def deep_merge(base: dict[str, Any], delta: dict[str, Any]) -> None:
             base[key] = value
 
 
+def merge_command_bodies(bodies: list[dict[str, Any]]) -> dict[str, Any]:
+    """Regroupe plusieurs corps de commande en un seul, dans l'ordre de
+    réception ; pour une même propriété, la dernière valeur l'emporte."""
+    merged: dict[str, Any] = {}
+    for body in bodies:
+        deep_merge(merged, body)
+    return merged
+
+
 def deep_get(data: dict[str, Any], path: tuple[str, ...]) -> Any:
     """Lit une valeur imbriquée, None si le chemin n'existe pas."""
     current: Any = data
@@ -464,6 +477,10 @@ class Bridge:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._appliances: dict[str, ApplianceBridge] = {}
         self._commands: dict[str, tuple[ApplianceBridge, Entity]] = {}
+        # Commandes reçues pour un appareil et pas encore envoyées, et la tâche
+        # qui les enverra groupées. Touchés uniquement depuis la boucle asyncio.
+        self._batches: dict[str, list[tuple[Entity, str, dict[str, Any]]]] = {}
+        self._batch_tasks: dict[str, asyncio.Task] = {}
         self._stopping = asyncio.Event()
 
     # ------------------------------------------------------------------
@@ -1081,19 +1098,42 @@ class Bridge:
         app, entity = entry
         LOGGER.info("Commande reçue : %s = %s", entity.name, payload)
         asyncio.run_coroutine_threadsafe(
-            self._run_command(app, entity, payload), self._loop
+            self._queue_command(app, entity, payload), self._loop
         )
 
-    async def _run_command(
+    async def _queue_command(
         self, app: ApplianceBridge, entity: Entity, payload: str
     ) -> None:
+        """Met la commande dans le lot de l'appareil ; le lot part groupé.
+
+        Un scénario ou un assistant publie programme, consigne et START à la
+        même milliseconde : envoyés chacun dans leur coroutine, ils arrivaient
+        à l'API dans un ordre quelconque (START accepté avant le programme, le
+        four ne démarre pas). Une seule requête avec toutes les propriétés,
+        comme le fait l'application, garde l'ordre et la cohérence."""
         assert entity.build_command is not None
-        assert self._client is not None
         try:
             body = entity.build_command(payload)
         except (ValueError, TypeError) as err:
             LOGGER.error("Valeur invalide pour %s : %r (%s)", entity.name, payload, err)
             return
+        self._batches.setdefault(app.appliance_id, []).append((entity, payload, body))
+        if app.appliance_id not in self._batch_tasks:
+            self._batch_tasks[app.appliance_id] = asyncio.create_task(
+                self._send_batch(app)
+            )
+
+    async def _send_batch(self, app: ApplianceBridge) -> None:
+        assert self._client is not None
+        try:
+            await asyncio.sleep(COMMAND_COALESCE_SECONDS)
+            items = self._batches.pop(app.appliance_id, [])
+        finally:
+            self._batch_tasks.pop(app.appliance_id, None)
+        if not items:
+            return
+        body = merge_command_bodies([item_body for _, _, item_body in items])
+        label = " ; ".join(f"{entity.name} = {payload}" for entity, payload, _ in items)
         try:
             await self._client.send_command(app.appliance_id, body)
         except ApplianceClientException as err:
@@ -1105,17 +1145,18 @@ class Bridge:
                     "l'activer sur l'écran de l'appareil (elle se coupe seule "
                     "après un moment, c'est une contrainte de sécurité)"
                 )
-            LOGGER.error("Échec de la commande %s = %s : %s%s", entity.name, payload, err, hint)
+            LOGGER.error("Échec de la commande %s : %s%s", label, err, hint)
             return
-        LOGGER.info("Commande %s = %s acceptée", entity.name, payload)
+        LOGGER.info("Commande %s acceptée", label)
         # Retour immédiat sans attendre la confirmation du flux SSE : l'état
         # réel écrasera cette valeur au prochain évènement.
-        if entity.has_state and entity.path:
-            deep_merge(app.reported, body)
-            if entity.render is not None:
-                value = entity.render(app.reported)
-                if value is not None:
-                    self._publish(app.state_topic(entity), value)
+        for entity, _, item_body in items:
+            if entity.has_state and entity.path:
+                deep_merge(app.reported, item_body)
+                if entity.render is not None:
+                    value = entity.render(app.reported)
+                    if value is not None:
+                        self._publish(app.state_topic(entity), value)
 
     def _connect_mqtt(self) -> mqtt.Client:
         cfg = self._config

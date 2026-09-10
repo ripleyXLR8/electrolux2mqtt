@@ -153,6 +153,25 @@ check(app.command_topic(entities["program"]) == "electrolux/four/program/set",
       "le topic de commande est bien formé")
 
 print(f"\n{len(entities)} entités construites")
+# --- Regroupement des commandes : un lot = une requête, ordre conservé --------
+merged = e2m.merge_command_bodies([
+    {"upperOven": {"program": "TRUE_FAN"}},
+    {"upperOven": {"targetTemperatureC": 180}},
+    {"upperOven": {"startTime": 120}},
+    {"upperOven": {"executeCommand": "START"}},
+    {"upperOven": {"targetTemperatureC": 200}},
+])
+check(merged == {"upperOven": {"program": "TRUE_FAN", "targetTemperatureC": 200,
+                               "startTime": 120, "executeCommand": "START"}},
+      "les corps de commande d'une même cavité fusionnent, dernière valeur gagnante")
+check(list(merged["upperOven"]) == ["program", "targetTemperatureC", "startTime", "executeCommand"],
+      "l'ordre de réception est conservé (START en dernier)")
+check(e2m.merge_command_bodies([{"energySavingMode": "ON"}, {"upperOven": {"program": "BAKE"}}])
+      == {"energySavingMode": "ON", "upperOven": {"program": "BAKE"}},
+      "racine et cavité cohabitent dans un même lot")
+check(e2m.merge_command_bodies([]) == {}, "lot vide")
+check(0 < e2m.COMMAND_COALESCE_SECONDS <= 1, "fenêtre de regroupement courte")
+
 if failures:
     print(f"\n{len(failures)} échec(s) :")
     for failure in failures:
