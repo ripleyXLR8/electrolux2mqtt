@@ -192,6 +192,25 @@ check(e2m.deep_get(app.reported, ("upperOven", "applianceState")) == "RUNNING"
       and "property" not in app.reported and "value" not in app.reported,
       "après fusion, l'état porte la propriété et aucune clé d'enveloppe")
 
+# --- Capabilities déclarées à plat (lave-linge, issue #1) ---------------------
+flat_app = e2m.ApplianceBridge(
+    appliance_id="wm", slug="wm", name="Lave-linge", model="EW7F3816DB",
+    brand="ELECTROLUX", base_topic="electrolux/wm",
+    availability_topic="electrolux/wm/availability",
+    capabilities={
+        "userSelections": {"access": "readwrite", "type": "complex"},
+        "userSelections/programUID": {"access": "read", "type": "string"},
+        "fCMiscellaneousState/waterUsage": {"access": "read", "type": "number"},
+    },
+)
+flat_app.reported = {"userSelections": {"programUID": "COTTON_PR_COTTONS"},
+                     "fCMiscellaneousState": {"waterUsage": 46}}
+bridge._build_entities(flat_app)
+check(flat_app.entities["userselections_programuid"].render(flat_app.reported)
+      == "COTTON_PR_COTTONS", "une clé « a/b » lit l'état imbriqué")
+check(flat_app.entities["fcmiscellaneousstate_waterusage"].render(flat_app.reported)
+      == "46", "une mesure sous une clé à plat est publiée")
+
 if failures:
     print(f"\n{len(failures)} échec(s) :")
     for failure in failures:

@@ -627,7 +627,9 @@ class Bridge:
         for key, value in node.items():
             if key in {"values", "triggers", "default"}:
                 continue
-            path = prefix + (key,)
+            # Un lave-linge déclare ses capabilities à plat
+            # (« userSelections/programUID ») alors que l'état reste imbriqué.
+            path = prefix + tuple(part for part in key.split("/") if part)
             if self._is_leaf(value):
                 leaves.append((path, value))
             elif isinstance(value, dict):
