@@ -211,6 +211,23 @@ check(flat_app.entities["userselections_programuid"].render(flat_app.reported)
 check(flat_app.entities["fcmiscellaneousstate_waterusage"].render(flat_app.reported)
       == "46", "une mesure sous une clé à plat est publiée")
 
+# --- Premier démarrage sur refresh token seul (forum 151203) ------------------
+import asyncio  # noqa: E402
+import tempfile  # noqa: E402
+
+with tempfile.TemporaryDirectory() as tmp:
+    token_file = os.path.join(tmp, "electrolux_token.json")
+    boot = build(api_key="k", refresh_token="R0", token_file=token_file)[0]
+
+    async def fake_bootstrap(refresh):
+        return "A1", "R1"
+
+    boot._bootstrap_access_token = fake_bootstrap
+    asyncio.run(boot._make_client())
+    saved = json.load(open(token_file, encoding="utf-8"))
+    check(saved["refresh_token"] == "R1",
+          "l'échange initial garde le refresh token neuf, pas celui consommé")
+
 if failures:
     print(f"\n{len(failures)} échec(s) :")
     for failure in failures:

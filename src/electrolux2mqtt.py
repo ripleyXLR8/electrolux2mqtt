@@ -553,8 +553,13 @@ class Bridge:
                 err,
             )
 
-    async def _bootstrap_access_token(self, refresh_token: str) -> str:
-        """Échange un refresh token contre un access token, au premier démarrage."""
+    async def _bootstrap_access_token(self, refresh_token: str) -> tuple[str, str]:
+        """Échange un refresh token contre un couple neuf, au premier démarrage.
+
+        L'échange consomme le refresh token fourni : il faut garder celui que
+        renvoie Electrolux, sinon le premier renouvellement (12 h plus tard)
+        part d'un jeton mort et prend un 401.
+        """
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 TOKEN_REFRESH_URL, json={"refreshToken": refresh_token}
@@ -568,7 +573,7 @@ class Bridge:
                         "https://developer.electrolux.one/dashboard"
                     )
                 data = await response.json()
-        return data["accessToken"]
+        return data["accessToken"], data.get("refreshToken") or refresh_token
 
     # ------------------------------------------------------------------
     # Construction des entités à partir des capabilities de l'appareil
@@ -1328,7 +1333,7 @@ class Bridge:
             raise SystemExit("Aucun refresh token. Renseigner ELECTROLUX_REFRESH_TOKEN.")
         if not access:
             LOGGER.info("Pas d'access token : obtention depuis le refresh token")
-            access = await self._bootstrap_access_token(refresh)
+            access, refresh = await self._bootstrap_access_token(refresh)
         self._tokens = TokenManager(
             access_token=access,
             refresh_token=refresh,
