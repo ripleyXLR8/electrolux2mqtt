@@ -22,12 +22,14 @@ import argparse
 import asyncio
 import configparser
 import fnmatch
+import hashlib
 import json
 import logging
 import os
 import re
 import signal
 import sys
+import time
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -35,10 +37,12 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import aiohttp
+import jwt
 import paho.mqtt.client as mqtt
 from electrolux_group_developer_sdk.auth.token_manager import TokenManager
 from electrolux_group_developer_sdk.client.appliance_client import ApplianceClient
 from electrolux_group_developer_sdk.client.client_exception import ApplianceClientException
+from electrolux_group_developer_sdk.client.client_util import request
 from electrolux_group_developer_sdk.config import TOKEN_REFRESH_URL
 
 LOGGER = logging.getLogger("electrolux2mqtt")
@@ -55,6 +59,11 @@ PAYLOAD_ON = "ON"
 PAYLOAD_OFF = "OFF"
 AVAILABLE = "online"
 NOT_AVAILABLE = "offline"
+
+# Renouvellement des jetons : anticipé de 5 minutes sur l'expiration de
+# l'access token (12 h), et retenté toutes les minutes en cas d'échec réseau.
+TOKEN_RENEW_MARGIN = 300
+TOKEN_RETRY_DELAY = 60
 
 # Libellés français des propriétés connues. Une propriété absente de cette
 # table reste exposée, sous son nom technique : mieux vaut une commande au nom
@@ -456,6 +465,88 @@ class ApplianceBridge:
         return f"{self.base_topic}/{entity.key}/set"
 
 
+class TokensRejected(Exception):
+    """Electrolux a refusé le refresh token : seul un nouveau couple débloque."""
+
+
+def token_fingerprint(token: str) -> str:
+    """Empreinte courte d'un jeton, pour le reconnaître sans le stocker."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+class RotatingTokenManager(TokenManager):
+    """TokenManager du SDK, avec un seul renouvellement à la fois.
+
+    Electrolux change le refresh token à chaque renouvellement et refuse
+    l'ancien. Le SDK, lui, renouvelle depuis n'importe quelle requête sans
+    verrou : quand le flux SSE se reconnecte au moment même où tombe une
+    relecture, deux renouvellements partent avec le même jeton, le second
+    prend un 401 « Invalid grant » et la chaîne entière est révoquée.
+
+    Un refus définitif (4xx) est retenu : plus aucun appel ensuite, au lieu
+    de solliciter l'API toutes les 10 s avec un jeton mort.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self._lock = asyncio.Lock()
+        self.rejected = asyncio.Event()
+        self.rejection = ""
+        super().__init__(*args, **kwargs)
+
+    def seconds_left(self) -> float:
+        """Durée de validité restante de l'access token, 0 si illisible."""
+        try:
+            payload = jwt.decode(
+                self._auth_data.access_token,
+                options={"verify_signature": False, "verify_exp": False},
+            )
+        except jwt.PyJWTError:
+            return 0.0
+        exp = payload.get("exp")
+        return float(exp) - time.time() if exp else 0.0
+
+    async def refresh_token(self) -> bool:
+        """Appelé par le SDK quand l'access token arrive à moins de 60 s."""
+        return await self.renew_if_needed(60)
+
+    async def renew_if_needed(self, margin: float) -> bool:
+        async with self._lock:
+            # Une autre tâche a pu renouveler pendant qu'on attendait le verrou.
+            if self.seconds_left() > margin:
+                return True
+            return await self._renew()
+
+    async def _renew(self) -> bool:
+        if self.rejected.is_set():
+            return False
+        current = self._auth_data
+        try:
+            data = await request(
+                method="POST",
+                url=TOKEN_REFRESH_URL,
+                json_body={"refreshToken": current.refresh_token},
+            )
+        except aiohttp.ClientResponseError as err:
+            if 400 <= err.status < 500 and err.status != 429:
+                self.rejection = f"HTTP {err.status} : {err.message}"
+                LOGGER.error("Refresh token refusé par Electrolux (%s)", self.rejection)
+                self.rejected.set()
+                return False
+            LOGGER.warning("Renouvellement des jetons impossible pour l'instant : %s", err)
+            return False
+        except Exception as err:  # réseau, timeout, réponse illisible
+            LOGGER.warning("Renouvellement des jetons impossible pour l'instant : %s", err)
+            return False
+        self.update(
+            access_token=data["accessToken"],
+            refresh_token=data.get("refreshToken") or current.refresh_token,
+            api_key=current.api_key,
+        )
+        expires = datetime.now() + timedelta(seconds=self.seconds_left())
+        LOGGER.info("Jetons renouvelés, prochaine expiration à %s", expires.strftime("%d/%m %H:%M:%S"))
+        return True
+
+
 class Bridge:
     """Le pont : une connexion MQTT, un flux SSE pour tous les appareils."""
 
@@ -483,7 +574,10 @@ class Bridge:
         self._include = {item.strip() for item in included.split(",") if item.strip()}
         self._token_file = config.get("electrolux", "token_file", fallback=TOKEN_PATH)
         self._client: ApplianceClient | None = None
-        self._tokens: TokenManager | None = None
+        self._tokens: RotatingTokenManager | None = None
+        # Empreinte du refresh token de la configuration : s'il change, c'est
+        # qu'un nouveau couple a été généré et il l'emporte sur le fichier.
+        self._seed = ""
         self._mqtt: mqtt.Client | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._appliances: dict[str, ApplianceBridge] = {}
@@ -504,10 +598,15 @@ class Bridge:
         Le portail Electrolux délivre un couple de jetons, et l'API en renvoie
         un **nouveau** à chaque rafraîchissement : sans persistance, un simple
         redémarrage du conteneur repartirait d'un refresh token déjà consommé.
+
+        Le fichier ne l'emporte que tant que la configuration contient le
+        refresh token dont il est issu : un couple regénéré sur le portail et
+        saisi dans la configuration est pris tel quel, sans effacer le fichier.
         """
         api_key = self._config.get("electrolux", "api_key", fallback="").strip()
         access = self._config.get("electrolux", "access_token", fallback="").strip()
         refresh = self._config.get("electrolux", "refresh_token", fallback="").strip()
+        self._seed = token_fingerprint(refresh) if refresh else ""
 
         try:
             with open(self._token_file, encoding="utf-8") as handle:
@@ -521,6 +620,17 @@ class Bridge:
         if saved.get("api_key") and saved["api_key"] != api_key:
             LOGGER.info("Clé API changée dans la configuration : jetons sauvegardés ignorés")
             return api_key, access, refresh
+        if self._seed and saved.get("seed") and saved["seed"] != self._seed:
+            LOGGER.info(
+                "Nouveau refresh token dans la configuration : jetons sauvegardés ignorés"
+            )
+            return api_key, access, refresh
+        # Fichier d'une version antérieure : il ne connaît pas encore son origine.
+        self._seed = saved.get("seed") or self._seed
+        if saved.get("rejected"):
+            raise TokensRejected(
+                f"{saved['rejected']} — constaté le {saved.get('saved_at', '?')}"
+            )
         LOGGER.info("Jetons repris depuis %s", self._token_file)
         return (
             api_key,
@@ -528,14 +638,23 @@ class Bridge:
             saved.get("refresh_token") or refresh,
         )
 
-    def _save_tokens(self, access_token: str, refresh_token: str, api_key: str) -> None:
-        """Callback du SDK : appelé à chaque rotation des jetons."""
+    def _save_tokens(
+        self, access_token: str, refresh_token: str, api_key: str, rejected: str = ""
+    ) -> None:
+        """Callback du SDK : appelé à chaque rotation des jetons.
+
+        `rejected` marque un couple refusé par Electrolux, pour qu'un
+        redémarrage ne le présente pas de nouveau à l'API.
+        """
         payload = {
             "api_key": api_key,
             "access_token": access_token,
             "refresh_token": refresh_token,
+            "seed": self._seed,
             "saved_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         }
+        if rejected:
+            payload["rejected"] = rejected
         try:
             directory = os.path.dirname(self._token_file) or "."
             os.makedirs(directory, exist_ok=True)
@@ -1318,6 +1437,42 @@ class Bridge:
             LOGGER.debug("Relecture périodique")
             await self._refresh_all()
 
+    async def _keep_tokens(self) -> None:
+        """Renouvelle les jetons 5 minutes avant leur expiration.
+
+        Sans cela, le renouvellement n'a lieu qu'au gré des requêtes, souvent
+        au moment où le serveur coupe le flux SSE — là où les collisions se
+        produisent. Le verrou du gestionnaire couvre de toute façon le reste.
+        """
+        assert self._tokens is not None
+        tokens = self._tokens
+        delay = max(tokens.seconds_left() - TOKEN_RENEW_MARGIN, 0)
+        while True:
+            stop = asyncio.create_task(self._stopping.wait())
+            rejected = asyncio.create_task(tokens.rejected.wait())
+            done, pending = await asyncio.wait(
+                [stop, rejected], timeout=delay, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+            if rejected in done:
+                raise TokensRejected(tokens.rejection)
+            if stop in done:
+                return
+            if await tokens.renew_if_needed(TOKEN_RENEW_MARGIN):
+                delay = max(tokens.seconds_left() - TOKEN_RENEW_MARGIN, TOKEN_RETRY_DELAY)
+            else:
+                delay = TOKEN_RETRY_DELAY
+
+    def _mark_rejected(self, reason: str) -> None:
+        if self._tokens is None:
+            return
+        auth = self._tokens._auth_data
+        self._save_tokens(auth.access_token, auth.refresh_token, auth.api_key, rejected=reason)
+
+    async def wait_stopped(self) -> None:
+        await self._stopping.wait()
+
     # ------------------------------------------------------------------
     # Cycle de vie
     # ------------------------------------------------------------------
@@ -1334,7 +1489,7 @@ class Bridge:
         if not access:
             LOGGER.info("Pas d'access token : obtention depuis le refresh token")
             access, refresh = await self._bootstrap_access_token(refresh)
-        self._tokens = TokenManager(
+        self._tokens = RotatingTokenManager(
             access_token=access,
             refresh_token=refresh,
             api_key=api_key,
@@ -1417,32 +1572,47 @@ class Bridge:
         self._loop = asyncio.get_running_loop()
         self._client = await self._make_client()
         try:
-            if dump_only:
-                await self.dump()
-                return
-            await self.setup()
-            self._mqtt = self._connect_mqtt()
-            for app in self._appliances.values():
-                self._client.add_listener(
-                    app.appliance_id,
-                    lambda event, app=app: self._on_event(app, event),
-                )
-            tasks = [
-                asyncio.create_task(self._stream()),
-                asyncio.create_task(self._periodic_refresh()),
-            ]
-            stop = asyncio.create_task(self._stopping.wait())
-            done, _ = await asyncio.wait(
-                [*tasks, stop], return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in done:
-                if task is not stop and task.exception() is not None:
-                    raise task.exception()  # type: ignore[misc]
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await self._run(dump_only)
+        except TokensRejected as err:
+            self._mark_rejected(str(err))
+            raise
+        except Exception as err:
+            # Le SDK enrobe l'échec du renouvellement dans ses propres erreurs.
+            if self._tokens is not None and self._tokens.rejected.is_set():
+                self._mark_rejected(self._tokens.rejection)
+                raise TokensRejected(self._tokens.rejection) from err
+            raise
         finally:
             await self.shutdown()
+
+    async def _run(self, dump_only: bool) -> None:
+        if dump_only:
+            await self.dump()
+            return
+        await self.setup()
+        self._mqtt = self._connect_mqtt()
+        for app in self._appliances.values():
+            self._client.add_listener(
+                app.appliance_id,
+                lambda event, app=app: self._on_event(app, event),
+            )
+        tasks = [
+            asyncio.create_task(self._stream()),
+            asyncio.create_task(self._periodic_refresh()),
+            asyncio.create_task(self._keep_tokens()),
+        ]
+        stop = asyncio.create_task(self._stopping.wait())
+        done, _ = await asyncio.wait(
+            [*tasks, stop], return_when=asyncio.FIRST_COMPLETED
+        )
+        # Annuler d'abord : sans cela, le flux SSE continuerait de tourner
+        # pendant que l'erreur d'une autre tâche remonte.
+        for task in [*tasks, stop]:
+            task.cancel()
+        await asyncio.gather(*tasks, stop, return_exceptions=True)
+        for task in done:
+            if task is not stop and task.exception() is not None:
+                raise task.exception()  # type: ignore[misc]
 
     async def shutdown(self) -> None:
         """Arrêt propre : appareils marqués hors ligne, sessions fermées."""
@@ -1573,6 +1743,19 @@ async def main() -> int:
             signal.signal(sig, lambda *_: bridge.request_stop())
     try:
         await bridge.run(dump_only=args.dump)
+    except TokensRejected as err:
+        LOGGER.error(
+            "Refresh token refusé par Electrolux (%s). Plus aucun appel à l'API "
+            "avec ce couple : en générer un nouveau sur "
+            "https://developer.electrolux.one/dashboard, le saisir dans "
+            "ELECTROLUX_ACCESS_TOKEN et ELECTROLUX_REFRESH_TOKEN, puis redémarrer.",
+            err,
+        )
+        if not args.dump:
+            # Rester en vie plutôt que quitter : un redémarrage automatique du
+            # conteneur ne ferait que reproduire la même erreur en boucle.
+            await bridge.wait_stopped()
+        return 2
     except ApplianceClientException as err:
         if getattr(err, "status", None) in (401, 403):
             LOGGER.error(

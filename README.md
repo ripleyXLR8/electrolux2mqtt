@@ -47,8 +47,10 @@ the official data model, token handling and event stream.
   with a non-persistent session the broker drops your subscriptions on any disconnect, and a bridge
   that only subscribes at startup keeps publishing states while quietly ignoring every command.
 - **Last Will.** If the container dies, the appliance's *online* indicator flips to off by itself.
-- **Token-safe.** Electrolux rotates the refresh token on every renewal. The current pair is
-  persisted, so a container restart does not leave you locked out with a spent token.
+- **Token-safe.** Electrolux rotates the refresh token on every renewal and rejects the old one.
+  The current pair is persisted, so a container restart does not leave you locked out with a spent
+  token; renewals are serialised and done 5 minutes before expiry, so two of them never race with
+  the same token.
 - **Read-only mode.** One switch to expose states and no commands at all — worth considering on an
   oven or a hob.
 
@@ -89,6 +91,12 @@ docker run -d --name electrolux2mqtt \
 
 Mounting `/config` is not strictly required, but strongly recommended: that is where the rotating
 token pair is stored.
+
+If Electrolux ever rejects the refresh token, the bridge says so in the log, marks the appliances
+offline and stops calling the API (it stays up rather than exiting, so an automatic restart does
+not loop on the same error). Generate a new pair on the portal, put it in
+`ELECTROLUX_ACCESS_TOKEN` / `ELECTROLUX_REFRESH_TOKEN` and restart: a refresh token that differs
+from the one the saved pair came from takes precedence over the token file, no need to delete it.
 
 ### Unraid
 

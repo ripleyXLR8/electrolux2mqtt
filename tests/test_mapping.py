@@ -228,6 +228,100 @@ with tempfile.TemporaryDirectory() as tmp:
     check(saved["refresh_token"] == "R1",
           "l'échange initial garde le refresh token neuf, pas celui consommé")
 
+# --- Renouvellement des jetons (forum 151307) --------------------------------
+import time  # noqa: E402
+
+import aiohttp  # noqa: E402
+import jwt  # noqa: E402
+
+
+def fake_jwt(seconds: float) -> str:
+    return jwt.encode({"exp": int(time.time() + seconds)}, "k" * 32, algorithm="HS256")
+
+
+def manager(access_seconds: float = -10) -> e2m.RotatingTokenManager:
+    return e2m.RotatingTokenManager(
+        access_token=fake_jwt(access_seconds), refresh_token="R1", api_key="k"
+    )
+
+
+calls: list[str] = []
+
+
+async def fake_ok(method, url, json_body=None, headers=None):
+    calls.append(json_body["refreshToken"])
+    await asyncio.sleep(0.05)
+    return {"accessToken": fake_jwt(43200), "refreshToken": f"R{len(calls) + 1}"}
+
+
+async def fake_401(method, url, json_body=None, headers=None):
+    calls.append(json_body["refreshToken"])
+    raise aiohttp.ClientResponseError(
+        request_info=None, history=(), status=401, message="Invalid grant provided"
+    )
+
+
+real_request = e2m.request
+
+
+async def concurrent_refresh(tokens):
+    return await asyncio.gather(tokens.refresh_token(), tokens.refresh_token())
+
+
+try:
+    e2m.request = fake_ok
+    tokens = manager()
+    results = asyncio.run(concurrent_refresh(tokens))
+    check(results == [True, True] and calls == ["R1"],
+          "deux renouvellements simultanés n'envoient qu'une requête")
+    check(tokens._auth_data.refresh_token == "R2",
+          "le refresh token neuf remplace le consommé")
+
+    calls.clear()
+    tokens = manager(access_seconds=3600)
+    asyncio.run(tokens.renew_if_needed(e2m.TOKEN_RENEW_MARGIN))
+    check(calls == [], "pas de renouvellement à plus de 5 min de l'expiration")
+    tokens = manager(access_seconds=120)
+    asyncio.run(tokens.renew_if_needed(e2m.TOKEN_RENEW_MARGIN))
+    check(calls == ["R1"], "renouvellement anticipé à moins de 5 min de l'expiration")
+
+    calls.clear()
+    e2m.request = fake_401
+    tokens = manager()
+    first = asyncio.run(tokens.refresh_token())
+    second = asyncio.run(tokens.refresh_token())
+    check(not first and not second and tokens.rejected.is_set() and calls == ["R1"],
+          "un refus définitif est retenu : plus aucun appel ensuite")
+finally:
+    e2m.request = real_request
+
+with tempfile.TemporaryDirectory() as tmp:
+    token_file = os.path.join(tmp, "electrolux_token.json")
+    json.dump({"api_key": "k", "access_token": "A5", "refresh_token": "R5",
+               "seed": e2m.token_fingerprint("R0")},
+              open(token_file, "w", encoding="utf-8"))
+    same = build(api_key="k", refresh_token="R0", token_file=token_file)[0]
+    check(same._load_tokens()[2] == "R5",
+          "le fichier l'emporte tant que la configuration n'a pas changé")
+    fresh = build(api_key="k", refresh_token="R9", token_file=token_file)[0]
+    check(fresh._load_tokens()[2] == "R9",
+          "un nouveau couple saisi dans la configuration l'emporte sur le fichier")
+
+    dead = build(api_key="k", refresh_token="R0", token_file=token_file)[0]
+    dead._load_tokens()
+    dead._tokens = e2m.RotatingTokenManager(
+        access_token="A5", refresh_token="R5", api_key="k"
+    )
+    dead._mark_rejected("HTTP 401 : Invalid grant provided")
+    try:
+        build(api_key="k", refresh_token="R0", token_file=token_file)[0]._load_tokens()
+        check(False, "un couple refusé n'est pas représenté au redémarrage")
+    except e2m.TokensRejected:
+        check(True, "un couple refusé n'est pas représenté au redémarrage")
+    check(build(api_key="k", refresh_token="R9", token_file=token_file)[0]
+          ._load_tokens()[2] == "R9",
+          "un nouveau couple débloque un fichier marqué refusé")
+
 if failures:
     print(f"\n{len(failures)} échec(s) :")
     for failure in failures:
